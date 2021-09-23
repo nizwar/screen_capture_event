@@ -1,6 +1,6 @@
 name: screen_capture_event
 description: Catch screen capture (Screenshot & Screen Record) event for Android and iOS
-version: 1.0.0
+version: 1.0.0+1
 homepage: https://github.com/nizwar/screen_capture_event.git
 
 environment:
