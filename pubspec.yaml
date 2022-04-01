@@ -1,16 +1,16 @@
 name: screen_capture_event
 description: Catch screen capture (Screenshot & Screen Record) event for Android and iOS
-version: 1.0.1
+version: 1.0.2
 homepage: https://github.com/nizwar/screen_capture_event.git
 
 environment:
-  sdk: ">=2.12.0 <3.0.0"
-  flutter: ">=1.20.0"
+  sdk: ">=2.15.0 <3.0.0"
+  flutter: ">=2.8.0"
 
 dependencies:
   flutter:
     sdk: flutter
-  permission_handler: ^9.0.1
+  permission_handler: ^9.2.0
 
 dev_dependencies:
   flutter_lints: ^1.0.4
