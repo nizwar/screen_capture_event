@@ -1,3 +1,7 @@
+## 1.1.0
+
+* Update to Flutter 3.0
+
 ## 1.0.2
 
 * Update deps
