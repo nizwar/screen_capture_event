@@ -1,3 +1,10 @@
+## 1.1.0
+* Use pemission handler without 3rd party plugin
+* Fix more bugs
+
+## 1.0.3
+
+* Merge [#7](https://github.com/nizwar/screen_capture_event/pull/7) fixes
 ## 1.0.2
 
 * Update deps

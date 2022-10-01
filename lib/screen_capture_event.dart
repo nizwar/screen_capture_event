@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 class ScreenCaptureEvent {
   final List<Function(bool recorded)> _screenRecordListener = [];
@@ -30,7 +29,9 @@ class ScreenCaptureEvent {
   }
 
   ///Request storage permission for Android usage
-  Future<void> storagePermission() => Permission.storage.request();
+  Future<void> storagePermission() {
+    return _channel.invokeMethod("request_permission");
+  }
 
   ///It will prevent user to screenshot/screenrecord on Android by set window Flag to WindowManager.LayoutParams.FLAG_SECURE
   Future<void> preventAndroidScreenShot(bool value) {
