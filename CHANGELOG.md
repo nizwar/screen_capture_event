@@ -1,3 +1,5 @@
+## 1.1.1
+* Fix Exception when addScreenShotListener (Android) Thanks to @juarezfranco
 ## 1.1.0
 * Use pemission handler without 3rd party plugin
 * Fix more bugs
