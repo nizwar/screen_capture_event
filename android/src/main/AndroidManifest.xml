@@ -1,6 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    package="id.nizwar.screen_capture_event">
+    xmlns:tools="http://schemas.android.com/tools">
     <application android:requestLegacyExternalStorage="true"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         tools:ignore="ManifestOrder" />

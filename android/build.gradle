@@ -24,6 +24,10 @@ apply plugin: 'com.android.library'
 android {
     compileSdkVersion 30
 
+    if (project.android.hasProperty("namespace")) {
+        namespace 'id.nizwar.screen_capture_event'
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
