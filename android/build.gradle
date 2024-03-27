@@ -22,12 +22,11 @@ rootProject.allprojects {
 apply plugin: 'com.android.library'
 
 android {
-    // Conditional for compatibility with AGP <4.2.
+    compileSdkVersion 30
+
     if (project.android.hasProperty("namespace")) {
         namespace 'id.nizwar.screen_capture_event'
     }
-
-    compileSdkVersion 30
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
