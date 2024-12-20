@@ -25,6 +25,10 @@ android {
     namespace 'id.nizwar.screen_capture_event'
     compileSdk 34
 
+    if (project.android.hasProperty("namespace")) {
+        namespace 'id.nizwar.screen_capture_event'
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
