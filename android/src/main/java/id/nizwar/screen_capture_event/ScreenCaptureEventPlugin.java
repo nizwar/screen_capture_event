@@ -55,6 +55,7 @@ public class ScreenCaptureEventPlugin implements FlutterPlugin, MethodCallHandle
 
     @Override
     public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
+
         switch (call.method) {
             case "prevent_screenshot":
                 if ((boolean) call.arguments) {
@@ -214,17 +215,18 @@ public class ScreenCaptureEventPlugin implements FlutterPlugin, MethodCallHandle
     @Override
     public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
     }
-
-
     public static String getMimeType(String url) {
-        String type = null;
-        String extension = MimeTypeMap.getFileExtensionFromUrl(url);
-        if (extension != null) {
-            type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
-        }
-        return type;
-    }
+ 
+        // Validate extension
+        int lastDotIndex = url.lastIndexOf('.');
+        if (lastDotIndex >= 0 && lastDotIndex < url.length() - 1) {
+            String extension = url.substring(lastDotIndex + 1);
+            return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
 
+        }
+
+        return null;
+    }
     public static File getLastModified(String directoryFilePath) {
         File directory = new File(directoryFilePath);
         if (directory.listFiles() == null) return null;
