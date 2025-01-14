@@ -31,6 +31,8 @@ import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
 
+import android.util.Log;
+
 /**
  * ScreenCaptureEventPlugin
  */
@@ -167,39 +169,55 @@ public class ScreenCaptureEventPlugin implements FlutterPlugin, MethodCallHandle
                 String mime = getMimeType(newFile.getPath());
                 if (mime != null) {
                     if (mime.contains("video") && !watchModifier.containsKey(newFile.getPath())) {
-                        watchModifier.put(newFile.getPath(), new FileObserver(newFile) {
-                            @Override
-                            public void onEvent(int event, @Nullable String path) {
-                                long curSize = newFile.length();
-                                if (curSize > tempSize) {
-                                    if (timeout != null) {
-                                        try {
-                                            timeout.cancel();
-                                            timeout = null;
-                                        } catch (Exception ignored) {
-                                        }
-                                    }
-                                    setScreenRecordStatus(event == FileObserver.MODIFY);
-                                    tempSize = newFile.length();
+                        FileObserver fileObserver;
+                        if (android.os.Build.VERSION.SDK_INT >= 29) {
+                            fileObserver = new FileObserver(newFile) {
+                                @Override
+                                public void onEvent(int event, @Nullable String path) {
+                                    handleUpdateScreenRecordEvent(event, newFile);
                                 }
-                                if (timeout == null) {
-                                    timeout = new Timer();
-                                    timeout.schedule(new TimerTask() {
-                                        @Override
-                                        public void run() {
-                                            if (watchModifier.containsKey(newFile.getPath())) {
-                                                setScreenRecordStatus(curSize != tempSize);
-                                            }
-                                        }
-                                    }, 1500);
+                            };
+                        } else {
+                            fileObserver = new FileObserver(newFile.getPath()) {
+                                @Override
+                                public void onEvent(int event, @Nullable String path) {
+                                    handleUpdateScreenRecordEvent(event, newFile);
                                 }
-                            }
-                        });
+                            };
+                        }
+                        watchModifier.put(newFile.getPath(), fileObserver);
+
                         FileObserver watch = watchModifier.get(newFile.getPath());
                         if (watch != null) watch.startWatching();
                     }
                 }
             }
+        }
+    }
+
+    private void handleUpdateScreenRecordEvent(int event, File newFile) {
+        long curSize = newFile.length();
+        if (curSize > tempSize) {
+            if (timeout != null) {
+                try {
+                    timeout.cancel();
+                    timeout = null;
+                } catch (Exception ignored) {
+                }
+            }
+            setScreenRecordStatus(event == FileObserver.MODIFY);
+            tempSize = newFile.length();
+        }
+        if (timeout == null) {
+            timeout = new Timer();
+            timeout.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    if (watchModifier.containsKey(newFile.getPath())) {
+                        setScreenRecordStatus(curSize != tempSize);
+                    }
+                }
+            }, 1500);
         }
     }
 
