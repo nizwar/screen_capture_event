@@ -88,14 +88,13 @@ public class ScreenCaptureEventPlugin implements FlutterPlugin, MethodCallHandle
                     fileObserver = new FileObserver(files) {
                         @Override
                         public void onEvent(int event, final String filename) {
-                            if (event == FileObserver.CREATE) {
-                                for (String fullPath : paths) {
-                                    File file = new File(fullPath + filename);
-                                    if (file.exists()) {
-                                        String mime = getMimeType(file.getPath());
-                                        if (mime != null) {
+                            for (String fullPath : paths) {
+                                File file = new File(fullPath + filename);
+                                if (file.exists()) {
+                                    String mime = getMimeType(file.getPath());
+                                    if (mime != null) {
+                                        if (event == FileObserver.CREATE || event == FileObserver.MODIFY) {
                                             if (mime.contains("video")) {
-                                                stopAllRecordWatcher();
                                                 setScreenRecordStatus(true);
                                                 updateScreenRecordStatus();
                                             } else if (mime.contains("image")) {
@@ -103,11 +102,17 @@ public class ScreenCaptureEventPlugin implements FlutterPlugin, MethodCallHandle
                                                     channel.invokeMethod("screenshot", file.getPath());
                                                 });
                                             }
+                                        }else{
+                                            if (mime.contains("video")) {
+                                                stopAllRecordWatcher();
+                                                setScreenRecordStatus(false);
+                                                updateScreenRecordStatus();
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
+                            }
                     };
                     fileObserver.startWatching();
                 } else {
@@ -116,18 +121,23 @@ public class ScreenCaptureEventPlugin implements FlutterPlugin, MethodCallHandle
                             @Override
                             public void onEvent(int event, final String filename) {
                                 File file = new File(path.getPath() + filename);
-                                if (event == FileObserver.CREATE) {
-                                    if (file.exists()) {
-                                        String mime = getMimeType(file.getPath());
-                                        if (mime != null) {
+                                if (file.exists()) {
+                                    String mime = getMimeType(file.getPath());
+                                    if (mime != null) {
+                                        if (event == FileObserver.CREATE || event == FileObserver.MODIFY) {
                                             if (mime.contains("video")) {
-                                                stopAllRecordWatcher();
                                                 setScreenRecordStatus(true);
                                                 updateScreenRecordStatus();
                                             } else if (mime.contains("image")) {
                                                 handler.post(() -> {
                                                     channel.invokeMethod("screenshot", file.getPath());
                                                 });
+                                            }
+                                        }else{
+                                            if (mime.contains("video")) {
+                                                stopAllRecordWatcher();
+                                                setScreenRecordStatus(false);
+                                                updateScreenRecordStatus();
                                             }
                                         }
                                     }
@@ -286,6 +296,7 @@ public class ScreenCaptureEventPlugin implements FlutterPlugin, MethodCallHandle
     }
 
     public enum Path {
+        DCIMSAMSUNG(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM) + File.separator + "Screen recordings" + File.separator),
         DCIM(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM) + File.separator + "Screenshots" + File.separator),
         PICTURES(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES) + File.separator + "Screenshots" + File.separator);
 
