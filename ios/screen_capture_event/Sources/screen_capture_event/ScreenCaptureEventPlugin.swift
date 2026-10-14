@@ -1,14 +1,14 @@
 import Flutter
 import UIKit
 
-public class SwiftScreenCaptureEventPlugin: NSObject, FlutterPlugin {
+public class ScreenCaptureEventPlugin: NSObject, FlutterPlugin {
     private var sink : FlutterEventSink?
     static var channel: FlutterMethodChannel?
     static var preventScreenshot: Bool = false
     
     public static func register(with registrar: FlutterPluginRegistrar) {
         channel = FlutterMethodChannel(name: "screencapture_method", binaryMessenger: registrar.messenger())
-        let instance = SwiftScreenCaptureEventPlugin()
+        let instance = ScreenCaptureEventPlugin()
         registrar.addMethodCallDelegate(instance, channel: channel!)
         
         channel!.setMethodCallHandler { (call: FlutterMethodCall, result:@escaping FlutterResult) -> Void in
