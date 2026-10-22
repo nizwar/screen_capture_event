@@ -1,29 +1,41 @@
 package id.nizwar.screen_capture_event;
 
 import android.Manifest;
+import android.app.Activity;
+import android.content.Context;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Environment;
 import android.os.FileObserver;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.WindowManager;
 import android.webkit.MimeTypeMap;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.ExecutorService;
+import java.util.Set;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
@@ -32,96 +44,96 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
+import io.flutter.plugin.common.PluginRegistry;
 
 /**
- * ScreenCaptureEventPlugin
+ * Reports screenshots and screen recordings to Dart.
  *
- * Performs all filesystem scanning and FileObserver setup off the main thread to
- * avoid the main-thread deadlock / ANR seen on Android 16, and uses the correct
- * media permission on Android 13+ (READ_MEDIA_IMAGES).
+ * <p>Screenshots: Android 14 and later report them through the system's screen capture
+ * callback (screenshots of this app while it is visible, no permission prompt). Older versions
+ * watch the screenshot folders, which needs read access to them. In both cases the file's path
+ * comes from the screenshot folders when the app can read them.
+ *
+ * <p>Screen recordings: Android 15 and later use the system's screen recording callback. Older
+ * versions watch the folders that some recorders (Samsung, Xiaomi, Huawei) write into while
+ * recording; recorders that only save the file once they stop can't be detected there.
+ *
+ * <p>All file system work and detection state live on {@link #worker}; the main thread handles
+ * method calls and delivers events.
  */
-public class ScreenCaptureEventPlugin implements FlutterPlugin, MethodCallHandler, ActivityAware {
-    static int SCREEN_CAPTURE_PERMISSION = 101;
-    private MethodChannel channel;
-    private FileObserver fileObserver;
-    private Timer timeout = new Timer();
-    private final Map<String, FileObserver> watchModifier = new HashMap<>();
-    private ActivityPluginBinding activityPluginBinding;
-    private Handler handler = new Handler(Looper.getMainLooper());
-    private boolean screenRecording = false;
-    private long tempSize = 0;
+public class ScreenCaptureEventPlugin
+        implements FlutterPlugin, MethodCallHandler, ActivityAware, PluginRegistry.RequestPermissionsResultListener {
+    private static final String TAG = "ScreenCaptureEvent";
+    private static final int PERMISSION_REQUEST_CODE = 101;
+    /** How long to wait for the screenshot's file after Android 14's callback. */
+    private static final long SCREENSHOT_FILE_TIMEOUT_MS = 3000;
+    /** A screenshot file is reported once, although several events announce it. */
+    private static final long SCREENSHOT_DEDUP_MS = 10000;
+    /** A recording counts as stopped once its file hasn't been written to for this long. */
+    private static final long RECORDING_IDLE_MS = 5000;
+    private static final int IN_ISDIR = 0x40000000;
 
-    // Executor to run heavy I/O work on a background thread.
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private MethodChannel channel;
+    private Context context;
+    private ScheduledExecutorService worker;
+
+    // Main thread (watching is also read on the worker thread).
+    @Nullable private ActivityPluginBinding activityBinding;
+    private volatile boolean watching;
+    private boolean secure;
+    @Nullable private Activity captureActivity;
+    @Nullable private Object screenCaptureCallback;
+    @Nullable private Consumer<Integer> screenRecordingCallback;
+
+    // Worker thread.
+    private final List<FileObserver> observers = new ArrayList<>();
+    private final Map<String, Long> reportedScreenshots = new HashMap<>();
+    private boolean observing;
+    @Nullable private ScheduledFuture<?> pendingScreenshot;
+    @Nullable private String lastScreenshotFile;
+    private long lastScreenshotFileAt;
+    @Nullable private ScheduledFuture<?> recordingIdle;
+
+    // Written on the worker thread, read by isRecording.
+    private volatile boolean recording;
 
     @Override
-    public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
-        channel = new MethodChannel(flutterPluginBinding.getBinaryMessenger(), "screencapture_method");
+    public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
+        context = binding.getApplicationContext();
+        worker = Executors.newSingleThreadScheduledExecutor();
+        channel = new MethodChannel(binding.getBinaryMessenger(), "screencapture_method");
         channel.setMethodCallHandler(this);
+    }
+
+    @Override
+    public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
+        stopWatching();
+        channel.setMethodCallHandler(null);
+        worker.shutdown();
     }
 
     @Override
     public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
         switch (call.method) {
             case "prevent_screenshot":
-                if ((boolean) call.arguments) {
-                    activityPluginBinding.getActivity().getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
-                } else {
-                    activityPluginBinding.getActivity().getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
-                }
+                secure = Boolean.TRUE.equals(call.arguments);
+                applySecureFlag();
                 result.success(null);
                 break;
             case "isRecording":
-                result.success(screenRecording);
+                result.success(recording);
                 break;
             case "request_permission":
-                String permission = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-                        ? Manifest.permission.READ_MEDIA_IMAGES
-                        : Manifest.permission.READ_EXTERNAL_STORAGE;
-
-                if (ContextCompat.checkSelfPermission(activityPluginBinding.getActivity(), permission) != PackageManager.PERMISSION_GRANTED) {
-                    ActivityCompat.requestPermissions(activityPluginBinding.getActivity(), new String[]{permission}, 101);
-                }
+                requestPermission();
                 result.success(null);
                 break;
             case "watch":
-                // Run the initial scan on a background thread to avoid freezing the app.
-                executor.execute(this::updateScreenRecordStatus);
-
-                if (Build.VERSION.SDK_INT >= 29) {
-                    final List<File> files = new ArrayList<>();
-                    final List<String> paths = new ArrayList<>();
-                    for (Path path : Path.values()) {
-                        files.add(new File(path.getPath()));
-                        paths.add(path.getPath());
-                    }
-                    fileObserver = new FileObserver(files) {
-                        @Override
-                        public void onEvent(int event, final String filename) {
-                            if (filename == null) return;
-                            executor.execute(() -> handleFileEvent(event, filename, paths));
-                        }
-                    };
-                } else {
-                    // Logic for older Android versions.
-                    for (final Path path : Path.values()) {
-                        fileObserver = new FileObserver(path.getPath()) {
-                            @Override
-                            public void onEvent(int event, final String filename) {
-                                if (filename == null) return;
-                                List<String> p = new ArrayList<>();
-                                p.add(path.getPath());
-                                executor.execute(() -> handleFileEvent(event, filename, p));
-                            }
-                        };
-                    }
-                }
-                if (fileObserver != null) fileObserver.startWatching();
+                startWatching();
                 result.success(null);
                 break;
             case "dispose":
-                if (fileObserver != null) fileObserver.stopWatching();
-                stopAllRecordWatcher();
+                stopWatching();
                 result.success(null);
                 break;
             default:
@@ -129,209 +141,374 @@ public class ScreenCaptureEventPlugin implements FlutterPlugin, MethodCallHandle
         }
     }
 
-    private void handleFileEvent(int event, String filename, List<String> paths) {
-        for (String fullPath : paths) {
-            File file = new File(fullPath + filename);
-            if (file.exists()) {
-                String mime = getMimeType(file.getPath());
-                if (mime != null) {
-                    if (event == FileObserver.CREATE || event == FileObserver.MODIFY) {
-                        if (mime.contains("video")) {
-                            setScreenRecordStatus(true);
-                            updateScreenRecordStatus();
-                        } else if (mime.contains("image")) {
-                            handler.post(() -> channel.invokeMethod("screenshot", file.getPath()));
-                        }
-                    } else {
-                        if (mime.contains("video")) {
-                            stopAllRecordWatcher();
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private void stopAllRecordWatcher() {
-        for (Map.Entry<String, FileObserver> stringObjectEntry : watchModifier.entrySet()) {
-            stringObjectEntry.getValue().stopWatching();
-        }
-        watchModifier.clear();
-        setScreenRecordStatus(false);
-    }
-
-    private void updateScreenRecordStatus() {
-        // Runs entirely on the executor.
-        for (Path path : Path.values()) {
-            File newFile = getLastModified(path.getPath());
-            if (newFile != null) {
-                String mime = getMimeType(newFile.getPath());
-                if (mime != null && mime.contains("video") && !watchModifier.containsKey(newFile.getPath())) {
-                    handler.post(() -> {
-                        FileObserver fo;
-                        if (Build.VERSION.SDK_INT >= 29) {
-                            fo = new FileObserver(newFile) {
-                                @Override
-                                public void onEvent(int event, @Nullable String p) {
-                                    handleUpdateScreenRecordEvent(event, newFile);
-                                }
-                            };
-                        } else {
-                            fo = new FileObserver(newFile.getPath()) {
-                                @Override
-                                public void onEvent(int event, @Nullable String p) {
-                                    handleUpdateScreenRecordEvent(event, newFile);
-                                }
-                            };
-                        }
-                        watchModifier.put(newFile.getPath(), fo);
-                        fo.startWatching();
-                    });
-                }
-            }
-        }
-    }
-
-    private void handleUpdateScreenRecordEvent(int event, File newFile) {
-        executor.execute(() -> {
-            long curSize = newFile.length();
-            if (curSize > tempSize) {
-                if (timeout != null) {
-                    try {
-                        timeout.cancel();
-                    } catch (Exception ignored) {}
-                }
-                setScreenRecordStatus(event == FileObserver.MODIFY);
-                tempSize = curSize;
-            }
-
-            timeout = new Timer();
-            timeout.schedule(new TimerTask() {
-                @Override
-                public void run() {
-                    if (watchModifier.containsKey(newFile.getPath())) {
-                        setScreenRecordStatus(newFile.length() != tempSize);
-                    }
-                }
-            }, 1500);
-        });
-    }
-
-    void setScreenRecordStatus(boolean value) {
-        if (screenRecording != value) {
-            handler.post(() -> {
-                screenRecording = value;
-                channel.invokeMethod("screenrecord", value);
-            });
-        }
-    }
-
-    @Override
-    public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
-        executor.shutdown();
-    }
-
-    public static String getMimeType(String url) {
-        int lastDotIndex = url.lastIndexOf('.');
-        if (lastDotIndex >= 0 && lastDotIndex < url.length() - 1) {
-            String extension = url.substring(lastDotIndex + 1);
-            return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
-        }
-        return null;
-    }
-
-    public static File getLastModified(String directoryFilePath) {
-        try {
-            File directory = new File(directoryFilePath);
-
-            // Verify the directory exists and is readable.
-            if (!directory.exists() || !directory.isDirectory() || !directory.canRead()) {
-                return null;
-            }
-
-            // Use a FileFilter to collect only readable files and reduce overhead.
-            File[] files = directory.listFiles(new java.io.FileFilter() {
-                @Override
-                public boolean accept(File file) {
-                    return file.isFile() && file.canRead();
-                }
-            });
-
-            if (files == null || files.length == 0) {
-                return null;
-            }
-
-            // Cap the number of files scanned to avoid freezing when a folder has many files.
-            int maxFilesToCheck = Math.min(files.length, 200);
-
-            // When there are many files, partially sort so the newest are prioritized.
-            // Only sort as many as needed to avoid wasting time.
-            if (files.length > 50) {
-                // Use Arrays.sort with a comparator to sort by lastModified descending.
-                java.util.Arrays.sort(files, 0, Math.min(files.length, 100),
-                    (f1, f2) -> {
-                        try {
-                            long time1 = f1.lastModified();
-                            long time2 = f2.lastModified();
-                            return Long.compare(time2, time1); // descending
-                        } catch (Exception e) {
-                            return 0;
-                        }
-                    });
-            }
-
-            long lastModifiedTime = Long.MIN_VALUE;
-            File chosenFile = null;
-
-            // Scan the capped set of files, preferring the sorted ones.
-            for (int i = 0; i < maxFilesToCheck; i++) {
-                File file = files[i];
-                try {
-                    long modifiedTime = file.lastModified();
-                    if (modifiedTime > lastModifiedTime) {
-                        chosenFile = file;
-                        lastModifiedTime = modifiedTime;
-                    }
-                } catch (Exception e) {
-                    // Skip a problematic file and continue.
-                    continue;
-                }
-            }
-
-            return chosenFile;
-        } catch (SecurityException e) {
-            // No permission to access the directory.
-            return null;
-        } catch (Exception e) {
-            return null;
-        }
-    }
+    // ---------------------------------------------------------------- activity
 
     @Override
     public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
-        activityPluginBinding = binding;
+        activityBinding = binding;
+        binding.addRequestPermissionsResultListener(this);
+        applySecureFlag();
+        if (watching) registerScreenCaptureCallback();
     }
 
     @Override
-    public void onDetachedFromActivityForConfigChanges() {}
+    public void onDetachedFromActivityForConfigChanges() {
+        onDetachedFromActivity();
+    }
 
     @Override
     public void onReattachedToActivityForConfigChanges(@NonNull ActivityPluginBinding binding) {
-        activityPluginBinding = binding;
+        onAttachedToActivity(binding);
     }
 
     @Override
     public void onDetachedFromActivity() {
-        activityPluginBinding = null;
+        unregisterScreenCaptureCallback();
+        if (activityBinding != null) activityBinding.removeRequestPermissionsResultListener(this);
+        activityBinding = null;
     }
 
-    public enum Path {
-        DCIMSAMSUNG(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM) + File.separator + "Screen recordings" + File.separator),
-        DCIM(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM) + File.separator + "Screenshots" + File.separator),
-        PICTURES(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES) + File.separator + "Screenshots" + File.separator);
+    @Override
+    public boolean onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        if (requestCode != PERMISSION_REQUEST_CODE) return false;
+        // Folders that couldn't be read before can be watched now.
+        if (watching) worker.execute(this::watchFolders);
+        return true;
+    }
 
-        final private String path;
-        public String getPath() { return path; }
-        Path(String path) { this.path = path; }
+    private void applySecureFlag() {
+        if (activityBinding == null) return;
+        if (secure) {
+            activityBinding.getActivity().getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        } else {
+            activityBinding.getActivity().getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        }
+    }
+
+    // ------------------------------------------------------------- permissions
+
+    /**
+     * Asks for read access to the screenshot and recording folders. Only permissions the app
+     * declares are requested: undeclared ones are denied without a prompt, and declaring the
+     * Android 13+ media permissions is left to the app because of Google Play's policy on them.
+     */
+    private void requestPermission() {
+        if (activityBinding == null) return;
+        Activity activity = activityBinding.getActivity();
+        List<String> wanted = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= 33) {
+            wanted.add(Manifest.permission.READ_MEDIA_IMAGES);
+            if (Build.VERSION.SDK_INT < 35) wanted.add(Manifest.permission.READ_MEDIA_VIDEO);
+        } else {
+            wanted.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+        }
+        Set<String> declared = declaredPermissions();
+        List<String> missing = new ArrayList<>();
+        for (String permission : wanted) {
+            if (declared.contains(permission)
+                    && ContextCompat.checkSelfPermission(activity, permission) != PackageManager.PERMISSION_GRANTED) {
+                missing.add(permission);
+            }
+        }
+        if (!missing.isEmpty()) {
+            ActivityCompat.requestPermissions(activity, missing.toArray(new String[0]), PERMISSION_REQUEST_CODE);
+        }
+    }
+
+    private Set<String> declaredPermissions() {
+        Set<String> declared = new LinkedHashSet<>();
+        try {
+            PackageInfo info = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), PackageManager.GET_PERMISSIONS);
+            if (info.requestedPermissions != null) declared.addAll(Arrays.asList(info.requestedPermissions));
+        } catch (PackageManager.NameNotFoundException ignored) {
+        }
+        return declared;
+    }
+
+    private boolean canReadImages() {
+        String permission = Build.VERSION.SDK_INT >= 33
+                ? Manifest.permission.READ_MEDIA_IMAGES
+                : Manifest.permission.READ_EXTERNAL_STORAGE;
+        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    // ---------------------------------------------------------------- watching
+
+    private void startWatching() {
+        if (watching) return;
+        watching = true;
+        registerScreenCaptureCallback();
+        registerScreenRecordingCallback();
+        worker.execute(this::watchFolders);
+    }
+
+    private void stopWatching() {
+        if (!watching) return;
+        watching = false;
+        unregisterScreenCaptureCallback();
+        unregisterScreenRecordingCallback();
+        worker.execute(this::stopDetection);
+    }
+
+    private void registerScreenCaptureCallback() {
+        if (Build.VERSION.SDK_INT < 34 || screenCaptureCallback != null || activityBinding == null) return;
+        Activity activity = activityBinding.getActivity();
+        Activity.ScreenCaptureCallback callback = this::onScreenCaptured;
+        try {
+            activity.registerScreenCaptureCallback(worker, callback);
+            captureActivity = activity;
+            screenCaptureCallback = callback;
+        } catch (SecurityException e) {
+            Log.w(TAG, "Screenshot callback unavailable: " + e.getMessage());
+        }
+    }
+
+    private void unregisterScreenCaptureCallback() {
+        if (Build.VERSION.SDK_INT < 34 || screenCaptureCallback == null || captureActivity == null) return;
+        captureActivity.unregisterScreenCaptureCallback((Activity.ScreenCaptureCallback) screenCaptureCallback);
+        screenCaptureCallback = null;
+        captureActivity = null;
+    }
+
+    private void registerScreenRecordingCallback() {
+        if (Build.VERSION.SDK_INT < 35 || screenRecordingCallback != null) return;
+        Consumer<Integer> callback = state -> setRecording(state == WindowManager.SCREEN_RECORDING_STATE_VISIBLE);
+        try {
+            int state = windowManager().addScreenRecordingCallback(worker, callback);
+            screenRecordingCallback = callback;
+            boolean visible = state == WindowManager.SCREEN_RECORDING_STATE_VISIBLE;
+            worker.execute(() -> setRecording(visible));
+        } catch (SecurityException e) {
+            Log.w(TAG, "Screen recording callback unavailable: " + e.getMessage());
+        }
+    }
+
+    private void unregisterScreenRecordingCallback() {
+        if (Build.VERSION.SDK_INT < 35 || screenRecordingCallback == null) return;
+        windowManager().removeScreenRecordingCallback(screenRecordingCallback);
+        screenRecordingCallback = null;
+    }
+
+    @RequiresApi(35)
+    private WindowManager windowManager() {
+        return context.getSystemService(WindowManager.class);
+    }
+
+    // --------------------------------------------------- worker: screenshots
+
+    /** Android 14+: a screenshot of this app was taken; its file shows up a moment later. */
+    private void onScreenCaptured() {
+        if (!canReadImages()) {
+            sendScreenshot("");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (lastScreenshotFile != null && now - lastScreenshotFileAt < SCREENSHOT_FILE_TIMEOUT_MS) {
+            String path = lastScreenshotFile;
+            lastScreenshotFile = null;
+            sendScreenshot(path);
+            return;
+        }
+        if (pendingScreenshot != null) pendingScreenshot.cancel(false);
+        pendingScreenshot = worker.schedule(() -> {
+            pendingScreenshot = null;
+            sendScreenshot("");
+        }, SCREENSHOT_FILE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void onScreenshotFile(String path) {
+        long now = System.currentTimeMillis();
+        for (Iterator<Long> it = reportedScreenshots.values().iterator(); it.hasNext(); ) {
+            if (now - it.next() > SCREENSHOT_DEDUP_MS) it.remove();
+        }
+        if (reportedScreenshots.containsKey(path)) return;
+        reportedScreenshots.put(path, now);
+
+        if (Build.VERSION.SDK_INT >= 34) {
+            // Reported through the system callback; the file only tells which one it was.
+            if (pendingScreenshot == null) {
+                lastScreenshotFile = path;
+                lastScreenshotFileAt = now;
+                return;
+            }
+            pendingScreenshot.cancel(false);
+            pendingScreenshot = null;
+        }
+        sendScreenshot(path);
+    }
+
+    private void sendScreenshot(String path) {
+        mainHandler.post(() -> channel.invokeMethod("screenshot", path));
+    }
+
+    // ---------------------------------------------------- worker: recordings
+
+    private void onRecordingWritten() {
+        setRecording(true);
+        if (recordingIdle != null) recordingIdle.cancel(false);
+        recordingIdle = worker.schedule(this::onRecordingFinished, RECORDING_IDLE_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void onRecordingFinished() {
+        if (recordingIdle != null) recordingIdle.cancel(false);
+        recordingIdle = null;
+        setRecording(false);
+    }
+
+    private void setRecording(boolean value) {
+        if (recording == value) return;
+        recording = value;
+        mainHandler.post(() -> channel.invokeMethod("screenrecord", value));
+    }
+
+    // ------------------------------------------------------ worker: folders
+
+    private static File publicDirectory(String type) {
+        return Environment.getExternalStoragePublicDirectory(type);
+    }
+
+    private static List<File> watchedDirectories() {
+        List<File> directories = new ArrayList<>(Arrays.asList(
+                new File(publicDirectory(Environment.DIRECTORY_PICTURES), "Screenshots"),
+                new File(publicDirectory(Environment.DIRECTORY_DCIM), "Screenshots")));
+        if (Build.VERSION.SDK_INT < 35) {
+            // Recorders that write into a public folder while recording.
+            directories.add(new File(publicDirectory(Environment.DIRECTORY_DCIM), "Screen recordings"));
+            directories.add(new File(publicDirectory(Environment.DIRECTORY_DCIM), "ScreenRecorder"));
+        }
+        return directories;
+    }
+
+    /** (Re)creates the folder observers; screenshots and recordings in progress are kept. */
+    private void watchFolders() {
+        unwatchFolders();
+        if (!watching) return;
+        Set<File> parents = new LinkedHashSet<>();
+        for (File directory : watchedDirectories()) {
+            if (directory.isDirectory()) {
+                observers.add(DirectoryObserver.create(this, directory, false));
+            } else {
+                // Watch the parent until the folder exists: it is created with the first file.
+                File parent = directory.getParentFile();
+                if (parent != null && parent.isDirectory()) parents.add(parent);
+            }
+        }
+        for (File parent : parents) observers.add(DirectoryObserver.create(this, parent, true));
+        for (FileObserver observer : observers) observer.startWatching();
+        observing = true;
+    }
+
+    private void unwatchFolders() {
+        for (FileObserver observer : observers) observer.stopWatching();
+        observers.clear();
+        observing = false;
+    }
+
+    /** Stops watching and forgets the screenshots and recordings in progress. */
+    private void stopDetection() {
+        unwatchFolders();
+        if (pendingScreenshot != null) pendingScreenshot.cancel(false);
+        pendingScreenshot = null;
+        lastScreenshotFile = null;
+        if (recordingIdle != null) recordingIdle.cancel(false);
+        recordingIdle = null;
+        if (Build.VERSION.SDK_INT < 35) setRecording(false);
+    }
+
+    /** A watched folder was just created: watch it, and catch a file that is already complete. */
+    private void onFolderCreated(File folder) {
+        watchFolders();
+        File[] files = folder.listFiles();
+        if (files == null) return;
+        long now = System.currentTimeMillis();
+        for (File file : files) {
+            String mime = mimeType(file.getName());
+            if (mime != null && mime.startsWith("image/") && !file.getName().startsWith(".")
+                    && now - file.lastModified() < SCREENSHOT_DEDUP_MS) {
+                onScreenshotFile(file.getPath());
+            }
+        }
+    }
+
+    private void onFileEvent(File directory, boolean parentOnly, int event, String name) {
+        if (!observing) return;
+        boolean isDirectory = (event & IN_ISDIR) != 0;
+        int type = event & FileObserver.ALL_EVENTS;
+        if (parentOnly) {
+            File folder = new File(directory, name);
+            if (isDirectory && (type == FileObserver.CREATE || type == FileObserver.MOVED_TO)
+                    && watchedDirectories().contains(folder)) {
+                onFolderCreated(folder);
+            }
+            return;
+        }
+        if (isDirectory) return;
+
+        String mime = mimeType(name);
+        if (mime == null) return;
+        boolean finished = type == FileObserver.CLOSE_WRITE || type == FileObserver.MOVED_TO;
+        if (mime.startsWith("image/")) {
+            // Pending files (".pending-...") are renamed once they are complete.
+            if (finished && !name.startsWith(".")) onScreenshotFile(new File(directory, name).getPath());
+        } else if (mime.startsWith("video/") && Build.VERSION.SDK_INT < 35) {
+            if (type == FileObserver.CREATE || type == FileObserver.MODIFY) {
+                onRecordingWritten();
+            } else if (finished) {
+                onRecordingFinished();
+            }
+        }
+    }
+
+    @Nullable
+    private static String mimeType(String name) {
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) return null;
+        String extension = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+    }
+
+    /** Forwards one folder's events to the worker thread; kept referenced so it isn't collected. */
+    private static final class DirectoryObserver extends FileObserver {
+        private static final int FILE_EVENTS =
+                FileObserver.CREATE | FileObserver.MODIFY | FileObserver.CLOSE_WRITE | FileObserver.MOVED_TO;
+        private static final int FOLDER_EVENTS = FileObserver.CREATE | FileObserver.MOVED_TO;
+
+        private final ScreenCaptureEventPlugin plugin;
+        private final File directory;
+        private final boolean parentOnly;
+
+        static DirectoryObserver create(ScreenCaptureEventPlugin plugin, File directory, boolean parentOnly) {
+            int mask = parentOnly ? FOLDER_EVENTS : FILE_EVENTS;
+            return Build.VERSION.SDK_INT >= 29
+                    ? new DirectoryObserver(plugin, directory, mask, parentOnly)
+                    : new DirectoryObserver(plugin, directory.getPath(), mask, parentOnly);
+        }
+
+        @RequiresApi(29)
+        private DirectoryObserver(ScreenCaptureEventPlugin plugin, File directory, int mask, boolean parentOnly) {
+            super(directory, mask);
+            this.plugin = plugin;
+            this.directory = directory;
+            this.parentOnly = parentOnly;
+        }
+
+        @SuppressWarnings("deprecation")
+        private DirectoryObserver(ScreenCaptureEventPlugin plugin, String path, int mask, boolean parentOnly) {
+            super(path, mask);
+            this.plugin = plugin;
+            this.directory = new File(path);
+            this.parentOnly = parentOnly;
+        }
+
+        @Override
+        public void onEvent(int event, @Nullable String name) {
+            if (name == null) return;
+            try {
+                plugin.worker.execute(() -> plugin.onFileEvent(directory, parentOnly, event, name));
+            } catch (RejectedExecutionException ignored) {
+                // The engine is gone.
+            }
+        }
     }
 }

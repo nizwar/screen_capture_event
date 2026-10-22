@@ -1,7 +1,14 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
-    <application android:requestLegacyExternalStorage="true"/>
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        tools:ignore="ManifestOrder" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Up to Android 12: read the screenshot and screen recording folders. On Android 13 and
+         later that takes READ_MEDIA_IMAGES (and READ_MEDIA_VIDEO), which the app declares
+         itself if it wants the screenshot's path (see the README). -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <!-- Android 14 and later: told about screenshots of the app, without a prompt. -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE" />
+    <!-- Android 15 and later: told when the app shows up in a screen recording, without a prompt. -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_RECORDING" />
+
+    <application android:requestLegacyExternalStorage="true" />
 </manifest>
