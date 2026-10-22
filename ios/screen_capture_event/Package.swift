@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "screen_capture_event",
     platforms: [
-        .iOS("15.0")
+        .iOS("12.0")
     ],
     products: [
         .library(name: "screen-capture-event", targets: ["screen_capture_event"])

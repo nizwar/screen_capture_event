@@ -11,11 +11,11 @@ Catch screen capture (Screenshot & Screen Record) event for Android and iOS.
                        DESC
   s.homepage         = 'https://github.com/nizwar/screen_capture_event'
   s.license          = { :type => 'MIT', :file => '../LICENSE' }
-  s.author           = { 'Your Company' => 'email@example.com' }
+  s.author           = { 'Mochamad Nizwar Syafuan' => 'nizwar_id@icloud.com' }
   s.source           = { :path => '.' }
   s.source_files = 'screen_capture_event/Sources/screen_capture_event/**/*.swift'
   s.dependency 'Flutter'
-  s.platform = :ios, '15.0'
+  s.platform = :ios, '12.0'
 
   # Flutter.framework does not contain a i386 slice.
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }

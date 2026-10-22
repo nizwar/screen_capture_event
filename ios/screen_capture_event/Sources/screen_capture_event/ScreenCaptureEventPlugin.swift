@@ -1,62 +1,72 @@
 import Flutter
 import UIKit
 
+/// Reports screenshots (UIApplication.userDidTakeScreenshotNotification) and screen
+/// recording, mirroring and AirPlay (UIScreen.isCaptured) to Dart.
 public class ScreenCaptureEventPlugin: NSObject, FlutterPlugin {
-    private var sink : FlutterEventSink?
-    static var channel: FlutterMethodChannel?
-    static var preventScreenshot: Bool = false
-    
+    private let channel: FlutterMethodChannel
+    private var watching = false
+
+    init(channel: FlutterMethodChannel) {
+        self.channel = channel
+    }
+
     public static func register(with registrar: FlutterPluginRegistrar) {
-        channel = FlutterMethodChannel(name: "screencapture_method", binaryMessenger: registrar.messenger())
-        let instance = ScreenCaptureEventPlugin()
-        registrar.addMethodCallDelegate(instance, channel: channel!)
-        
-        channel!.setMethodCallHandler { (call: FlutterMethodCall, result:@escaping FlutterResult) -> Void in
-            switch call.method {
-            case "isRecording":
-                result.self(checkCaptured())
-                break
-            case "watch":
-                if checkCaptured() {channel!.invokeMethod("screenrecord", arguments: true)}
-                NotificationCenter.default.addObserver(self, selector: #selector(screenshotChange(_:)), name: UIApplication.userDidTakeScreenshotNotification, object: nil)
-                if #available(iOS 11.0, *) {
-                    NotificationCenter.default.addObserver(self, selector: #selector(screenrecordChange(_:)), name: UIScreen.capturedDidChangeNotification, object: nil)
-                }
-                break;
-            case "dispose":
-                NotificationCenter.default.removeObserver(self, name: UIApplication.userDidTakeScreenshotNotification, object: nil)
-                if #available(iOS 11.0, *) {
-                    NotificationCenter.default.removeObserver(self, name: UIScreen.capturedDidChangeNotification, object: nil)
-                }
-                break;
-            default:
-                break
-            }
+        let channel = FlutterMethodChannel(name: "screencapture_method", binaryMessenger: registrar.messenger())
+        registrar.addMethodCallDelegate(ScreenCaptureEventPlugin(channel: channel), channel: channel)
+    }
+
+    public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        switch call.method {
+        case "isRecording":
+            result(UIScreen.main.isCaptured)
+        case "watch":
+            startWatching()
+            result(nil)
+        case "dispose":
+            stopWatching()
+            result(nil)
+        case "prevent_screenshot", "request_permission":
+            // Android only.
+            result(nil)
+        default:
+            result(FlutterMethodNotImplemented)
         }
     }
-    
-    @objc static func screenshotChange(_ isCaptured: Bool) {
-        channel!.invokeMethod("screenshot", arguments: "ios_not_supported")
+
+    public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
+        stopWatching()
     }
-    
-    @objc static func screenrecordChange(_ isCaptured: Bool) {
-        channel!.invokeMethod("screenrecord", arguments: checkCaptured())
-    }
-    
-    public static func checkCaptured() -> Bool{
-        let ui = UIScreen.main
-        if #available(iOS 11.0, *){
-            if ui.isCaptured{
-                return true
-            }
+
+    private func startWatching() {
+        guard !watching else { return }
+        watching = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screenshotTaken),
+            name: UIApplication.userDidTakeScreenshotNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(captureChanged),
+            name: UIScreen.capturedDidChangeNotification, object: nil)
+        if UIScreen.main.isCaptured {
+            channel.invokeMethod("screenrecord", arguments: true)
         }
-        return false
     }
-    
-    deinit {
-        NotificationCenter.default.removeObserver(self, name: UIApplication.userDidTakeScreenshotNotification, object: nil)
-        if #available(iOS 11.0, *) {
-            NotificationCenter.default.removeObserver(self, name: UIScreen.capturedDidChangeNotification, object: nil)
-        }
+
+    private func stopWatching() {
+        guard watching else { return }
+        watching = false
+        NotificationCenter.default.removeObserver(
+            self, name: UIApplication.userDidTakeScreenshotNotification, object: nil)
+        NotificationCenter.default.removeObserver(
+            self, name: UIScreen.capturedDidChangeNotification, object: nil)
+    }
+
+    @objc private func screenshotTaken(_ notification: Notification) {
+        // iOS doesn't tell apps where screenshots are saved.
+        channel.invokeMethod("screenshot", arguments: "ios_not_supported")
+    }
+
+    @objc private func captureChanged(_ notification: Notification) {
+        channel.invokeMethod("screenrecord", arguments: UIScreen.main.isCaptured)
     }
 }
