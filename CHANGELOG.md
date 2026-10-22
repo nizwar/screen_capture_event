@@ -1,3 +1,13 @@
+## 1.2.1
+* Fix Android 16 main-thread deadlock/ANR: all filesystem scanning and FileObserver
+  setup now run on a background ExecutorService instead of the main thread.
+* Request `READ_MEDIA_IMAGES` on Android 13+ (TIRAMISU), falling back to
+  `READ_EXTERNAL_STORAGE` on older versions.
+* Every MethodChannel call now returns a result so Dart futures never hang.
+* `getLastModified()` guards directory access, filters to readable files, caps the
+  scan at 200 files with a partial mtime sort, and handles `SecurityException`.
+* Bump SDK constraint to Dart 3 (`>=3.0.0 <4.0.0`).
+
 ## 1.1.1
 * Fix Exception when addScreenShotListener (Android) Thanks to @juarezfranco
 ## 1.1.0
