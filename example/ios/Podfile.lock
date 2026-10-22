@@ -1,28 +1,28 @@
 PODS:
   - Flutter (1.0.0)
-  - permission_handler_apple (9.0.4):
+  - integration_test (0.0.1):
     - Flutter
   - screen_capture_event (0.0.1):
     - Flutter
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
-  - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
+  - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - screen_capture_event (from `.symlinks/plugins/screen_capture_event/ios`)
 
 EXTERNAL SOURCES:
   Flutter:
     :path: Flutter
-  permission_handler_apple:
-    :path: ".symlinks/plugins/permission_handler_apple/ios"
+  integration_test:
+    :path: ".symlinks/plugins/integration_test/ios"
   screen_capture_event:
     :path: ".symlinks/plugins/screen_capture_event/ios"
 
 SPEC CHECKSUMS:
-  Flutter: f04841e97a9d0b0a8025694d0796dd46242b2854
-  permission_handler_apple: 44366e37eaf29454a1e7b1b7d736c2cceaeb17ce
-  screen_capture_event: bcf965bb31968a51c08ad3698725c5ad8c597124
+  Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
+  integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
+  screen_capture_event: 9544566622c16cc3928cc30c7c40a76b3f2e482e
 
-PODFILE CHECKSUM: ef19549a9bc3046e7bb7d2fab4d021637c0c58a3
+PODFILE CHECKSUM: 3ba3a73b1b12adcf321a227a745625fe0888cc82
 
-COCOAPODS: 1.11.3
+COCOAPODS: 1.16.2

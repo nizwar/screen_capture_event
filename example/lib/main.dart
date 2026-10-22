@@ -9,28 +9,35 @@ void main() {
 }
 
 class ExampleScreenListener extends StatefulWidget {
-  const ExampleScreenListener({Key? key}) : super(key: key);
+  const ExampleScreenListener({super.key});
 
   @override
-  _ExampleScreenListenerState createState() => _ExampleScreenListenerState();
+  State<ExampleScreenListener> createState() => _ExampleScreenListenerState();
 }
 
 class _ExampleScreenListenerState extends State<ExampleScreenListener> {
   final ScreenCaptureEvent screenListener = ScreenCaptureEvent();
+  final List<String> events = [];
   String text = "Do Screenshot or Screen Record";
   bool preventScreenshot = false;
+
+  void log(String event) {
+    final time = TimeOfDay.now().format(context);
+    setState(() {
+      text = event;
+      events.insert(0, "$time  $event");
+    });
+  }
 
   @override
   void initState() {
     screenListener.addScreenRecordListener((recorded) {
-      setState(() {
-        text = recorded ? "Start Recording" : "Stop Recording";
-      });
+      log(recorded ? "Start Recording" : "Stop Recording");
     });
     screenListener.addScreenShotListener((filePath) {
-      setState(() {
-        text = "Screenshot stored on : $filePath";
-      });
+      log(filePath.isEmpty
+          ? "Screenshot taken"
+          : "Screenshot stored on : $filePath");
     });
     screenListener.watch();
     super.initState();
@@ -76,13 +83,7 @@ class _ExampleScreenListenerState extends State<ExampleScreenListener> {
                 backgroundColor: Theme.of(context).primaryColor),
             onPressed: () {
               screenListener.isRecording().then((value) {
-                setState(() {
-                  if (value) {
-                    text = "You're Still Recording";
-                  } else {
-                    text = "You're not recording";
-                  }
-                });
+                log(value ? "You're Still Recording" : "You're not recording");
               });
             },
             child: const Text(
@@ -90,6 +91,9 @@ class _ExampleScreenListenerState extends State<ExampleScreenListener> {
               style: TextStyle(color: Colors.white),
             ),
           ),
+          const SizedBox(height: 20),
+          Text("Events (${events.length})"),
+          for (final event in events) Text(event),
         ],
       ),
     );
